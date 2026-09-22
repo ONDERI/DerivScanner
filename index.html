@@ -1,101 +1,232 @@
-<section class="market-selector">
-  <label for="marketSelect">SELECT VOLATILITY</label>
-  <select id="marketSelect">
-    <option value="R_10">Volatility 10</option>
-    <option value="1HZ10V">Volatility 10 (1s)</option>
-    <option value="R_25">Volatility 25</option>
-    <option value="1HZ25V">Volatility 25 (1s)</option>
-    <option value="R_50">Volatility 50</option>
-    <option value="1HZ50V">Volatility 50 (1s)</option>
-    <option value="R_75">Volatility 75</option>
-    <option value="1HZ75V" selected>Volatility 75 (1s)</option>
-    <option value="R_100">Volatility 100</option>
-    <option value="1HZ100V">Volatility 100 (1s)</option>
-  </select>
-</section>
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DERIV MARKET SCANNER</title>
-<link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Deriv Market Scanner</title>
+  <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
-<div class="container">
-  <header>
-    <div>
-      <h1>DERIV MARKET SCANNER</h1>
-      <p>Live Volatility Market Intelligence</p>
-    </div>
-    <div id="connectionBadge" class="badge disconnected">DISCONNECTED</div>
+
+  <header class="header">
+    <h1>DERIV MARKET SCANNER</h1>
+    <p>Live Volatility Market Intelligence</p>
   </header>
 
-  <section class="controls">
-    <label>Sample Size
-      <select id="sampleSize">
-        <option value="100">100 ticks</option>
-        <option value="250">250 ticks</option>
-        <option value="500" selected>500 ticks</option>
-        <option value="1000">1000 ticks</option>
-      </select>
-    </label>
-    <label>Signal Threshold
-      <select id="signalThreshold">
-        <option value="72">72%</option>
-        <option value="75" selected>75%</option>
-        <option value="78">78%</option>
-        <option value="80">80%</option>
-      </select>
-    </label>
-    <button id="connectBtn">CONNECT SCANNER</button>
-    <button id="clearBtn" class="secondary">CLEAR DATA</button>
-  </section>
+  <main>
 
-  <section class="summary">
-    <div class="card"><span>MARKETS</span><strong id="marketCount">10</strong></div>
-    <div class="card"><span>LIVE TICKS</span><strong id="liveTicks">0</strong></div>
-    <div class="card"><span>ACTIVE SETUPS</span><strong id="activeSetups">0</strong></div>
-    <div class="card"><span>SCANNER MODE</span><strong>OVER 2 / UNDER 7</strong></div>
-  </section>
+    <section class="panel controls">
 
-  <section class="panel">
-    <h2>Market Signals</h2>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Market</th><th>Status</th><th>Ticks</th><th>Over 2</th>
-            <th>Under 7</th><th>Setup</th><th>Entry Digit</th><th>Entry Rate</th>
-          </tr>
-        </thead>
-        <tbody id="marketTable"></tbody>
-      </table>
-    </div>
-    <p class="note">Entry Digit is a statistical candidate selected from the eligible digits using overall frequency, recent frequency and recency. It is not a guaranteed next digit.</p>
-  </section>
+      <label>
+        SELECT VOLATILITY
 
-  <section class="panel">
-    <h2 id="selectedTitle">Selected Market Analysis</h2>
-    <div class="selected-grid">
-      <div class="mini"><span>Setup</span><strong id="selectedSetup">—</strong></div>
-      <div class="mini"><span>Entry Digit</span><strong id="selectedEntryDigit">—</strong></div>
-      <div class="mini"><span>Entry Rate</span><strong id="selectedEntryRate">—</strong></div>
-      <div class="mini"><span>Last Digit</span><strong id="selectedLastDigit">—</strong></div>
-    </div>
-    <h3>Digit Distribution</h3>
-    <div id="digitDistribution" class="digits"></div>
-    <h3>Recent Digit Sequence</h3>
-    <div id="recentSequence" class="sequence">—</div>
-    <h3>Analysis</h3>
-    <div id="analysisMessage" class="message">Connect the scanner to begin.</div>
-  </section>
+        <select id="marketSelect">
+          <option value="R_10">Volatility 10</option>
+          <option value="1HZ10V">Volatility 10 (1s)</option>
+          <option value="R_25">Volatility 25</option>
+          <option value="1HZ25V">Volatility 25 (1s)</option>
+          <option value="R_50">Volatility 50</option>
+          <option value="1HZ50V">Volatility 50 (1s)</option>
+          <option value="R_75">Volatility 75</option>
+          <option value="1HZ75V">Volatility 75 (1s)</option>
+          <option value="R_100">Volatility 100</option>
+          <option value="1HZ100V">Volatility 100 (1s)</option>
+        </select>
+      </label>
 
-  <section class="panel">
-    <h2>Recent Ticks</h2>
-    <div id="recentTicks" class="ticks">—</div>
-  </section>
-</div>
-<script src="app.js"></script>
+      <label>
+        Sample Size
+
+        <select id="sampleSize">
+          <option value="100">100 ticks</option>
+          <option value="250">250 ticks</option>
+          <option value="500" selected>500 ticks</option>
+          <option value="1000">1000 ticks</option>
+        </select>
+      </label>
+
+      <label>
+        Signal Threshold
+
+        <select id="threshold">
+          <option value="72">72%</option>
+          <option value="75" selected>75%</option>
+          <option value="78">78%</option>
+          <option value="80">80%</option>
+        </select>
+      </label>
+
+      <div id="connectionBadge" class="badge waiting">
+        DISCONNECTED
+      </div>
+
+    </section>
+
+
+    <section class="summary">
+
+      <div class="summary-card">
+        <span>MARKETS</span>
+        <strong id="marketCount">10</strong>
+      </div>
+
+      <div class="summary-card">
+        <span>LIVE TICKS</span>
+        <strong id="liveTicks">0</strong>
+      </div>
+
+      <div class="summary-card">
+        <span>ACTIVE SETUPS</span>
+        <strong id="activeSetups">0</strong>
+      </div>
+
+      <div class="summary-card">
+        <span>SCANNER MODE</span>
+        <strong>OVER 2 / UNDER 7</strong>
+      </div>
+
+    </section>
+
+
+    <section class="panel active-panel">
+
+      <h2>🔥 ACTIVE ENTRY SIGNALS</h2>
+
+      <p class="note">
+        OVER 2 and UNDER 7 are evaluated independently
+        across all 10 volatility markets.
+      </p>
+
+      <div id="activeEntries">
+
+        <div class="no-entry">
+          🟡 No strong entries at the moment.
+        </div>
+
+      </div>
+
+    </section>
+
+
+    <section class="panel">
+
+      <h2>MARKET SIGNALS</h2>
+
+      <div class="table-wrap">
+
+        <table>
+
+          <thead>
+
+            <tr>
+              <th rowspan="2">Market</th>
+              <th rowspan="2">Status</th>
+              <th rowspan="2">Ticks</th>
+              <th rowspan="2">Over 2 Rate</th>
+              <th rowspan="2">Under 7 Rate</th>
+
+              <th colspan="3">OVER 2</th>
+              <th colspan="3">UNDER 7</th>
+            </tr>
+
+            <tr>
+              <th>Setup</th>
+              <th>Entry</th>
+              <th>Confidence</th>
+
+              <th>Setup</th>
+              <th>Entry</th>
+              <th>Confidence</th>
+            </tr>
+
+          </thead>
+
+          <tbody id="marketTableBody"></tbody>
+
+        </table>
+
+      </div>
+
+    </section>
+
+
+    <section class="panel">
+
+      <h2>SELECTED MARKET ANALYSIS</h2>
+
+      <h3 id="selectedTitle">
+        Volatility 10
+      </h3>
+
+      <p>
+        <strong>Setup:</strong>
+        <span id="selectedSetup">
+          Waiting...
+        </span>
+      </p>
+
+      <p>
+        <strong>Entry Digit:</strong>
+        <span id="selectedEntryDigit">
+          —
+        </span>
+      </p>
+
+      <p>
+        <strong>Entry Confidence:</strong>
+        <span id="selectedEntryRate">
+          —
+        </span>
+      </p>
+
+      <p>
+        <strong>Last Digit:</strong>
+        <span id="selectedLastDigit">
+          —
+        </span>
+      </p>
+
+    </section>
+
+
+    <section class="panel">
+
+      <h2>DIGIT DISTRIBUTION</h2>
+
+      <div id="digitDistribution"></div>
+
+    </section>
+
+
+    <section class="panel">
+
+      <h2>RECENT DIGIT SEQUENCE</h2>
+
+      <div id="recentSequence">
+        Waiting for live ticks...
+      </div>
+
+    </section>
+
+
+    <section class="panel">
+
+      <h2>⚠️ SIGNAL INFORMATION</h2>
+
+      <p class="note">
+        Entry digits are statistical candidates based on recent
+        and historical digit frequency. A strong signal does not
+        guarantee the next tick and cannot eliminate trading losses.
+      </p>
+
+    </section>
+
+  </main>
+
+
+  <script src="app.js"></script>
+
 </body>
 </html>
+

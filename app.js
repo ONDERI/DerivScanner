@@ -1,640 +1,449 @@
-const DERIV_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
+const DERIV_URL =
+  "wss://api.derivws.com/trading/v1/options/ws/public";
 
 const MARKETS = [
-  ["Volatility 10","R_10"],["Volatility 10 (1s)","1HZ10V"],
-  ["Volatility 25","R_25"],["Volatility 25 (1s)","1HZ25V"],
-  ["Volatility 50","R_50"],["Volatility 50 (1s)","1HZ50V"],
-  ["Volatility 75","R_75"],["Volatility 75 (1s)","1HZ75V"],
-  ["Volatility 100","R_100"],["Volatility 100 (1s)","1HZ100V"]
+  ["Volatility 10", "R_10"],
+  ["Volatility 10 (1s)", "1HZ10V"],
+  ["Volatility 25", "R_25"],
+  ["Volatility 25 (1s)", "1HZ25V"],
+  ["Volatility 50", "R_50"],
+  ["Volatility 50 (1s)", "1HZ50V"],
+  ["Volatility 75", "R_75"],
+  ["Volatility 75 (1s)", "1HZ75V"],
+  ["Volatility 100", "R_100"],
+  ["Volatility 100 (1s)", "1HZ100V"]
 ];
 
-const state = {};
-
-MARKETS.forEach(([name,symbol]) => state[symbol] = {
-  name,
-  symbol,
-  digits: [],
-  quotes: [],
-  lastDigit: null,
-  available: null,
-  error: null,
-
-  lastStrongSetup: null,
-  cooldown: 0,
-  backtest: null
-});
-
-let socket = null;
-let selectedSymbol = MARKETS[0][1];
-let totalTicks = 0;
-
-const $ = id => document.getElementById(id);
-const sampleSize = () => Number($("sampleSize").value);
-const threshold = () => Number($("signalThreshold").value);
-
-/* Confirmation settings */
 const CONFIRMATION_WINDOW = 10;
 const REQUIRED_CONFIRMATIONS = 8;
 const STRONG_CONFIDENCE = 75;
 const COOLDOWN_TICKS = 15;
 const BACKTEST_COUNT = 500;
 
-function escapeHtml(v){
-  return String(v).replace(/[&<>"']/g,m=>({
-    "&":"&amp;",
-    "<":"&lt;",
-    ">":"&gt;",
-    '"':"&quot;",
-    "'":"&#039;"
-  }[m]));
-}
+let socket = null;
+let selectedSymbol = "R_10";
+let liveTicks = 0;
+let reqId = 5000;
 
-function digitFromQuote(q){
-  const s = String(q);
-  const m = s.match(/(\d)$/);
-  return m ? Number(m[1]) : null;
-}
+const state = {};
 
-/* Basic setup rates */
-function rates(data){
-  const arr = data.digits;
-  const n = arr.length;
+MARKETS.forEach(([name, symbol]) => {
+  state[symbol] = {
+    name,
+    symbol,
+    digits: [],
+    quotes: [],
+    lastDigit: null,
+    available: null,
+    error: null,
 
-  if(!n) return {over:0,under:0};
+    over: {
+      lastStrong: false,
+      cooldown: 0
+    },
 
-  return {
-    over: arr.filter(d=>d>2).length/n*100,
-    under: arr.filter(d=>d<7).length/n*100
+    under: {
+      lastStrong: false,
+      cooldown: 0
+    },
+
+    backtest: {
+      over: null,
+      under: null
+    }
   };
+});
+
+function $(id) {
+  return document.getElementById(id);
 }
 
-/* Count recent confirmations */
-function confirmation(data, setup){
-  const recent = data.digits.slice(-CONFIRMATION_WINDOW);
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
 
-  if(recent.length < CONFIRMATION_WINDOW){
+function digitFromQuote(quote) {
+  const text = String(quote);
+  const parts = text.split(".");
+
+  if (parts.length < 2) {
+    return Number(text.slice(-1));
+  }
+
+  return Number(parts[1].slice(-1));
+}
+
+function setupName(setup) {
+  return setup === "over" ? "OVER 2" : "UNDER 7";
+}
+
+function rates(data) {
+  const digits = data.digits;
+
+  if (!digits.length) {
     return {
-      supported: 0,
-      total: recent.length,
-      rate: 0,
-      confirmed: false
+      over: 0,
+      under: 0
     };
   }
 
-  let supported = 0;
-
-  if(setup === "OVER 2"){
-    supported = recent.filter(d => d > 2).length;
-  }
-
-  if(setup === "UNDER 7"){
-    supported = recent.filter(d => d < 7).length;
-  }
+  const overHits = digits.filter(d => d > 2).length;
+  const underHits = digits.filter(d => d < 7).length;
 
   return {
-    supported,
-    total: recent.length,
-    rate: supported / recent.length * 100,
-    confirmed: supported >= REQUIRED_CONFIRMATIONS
+    over: (overHits / digits.length) * 100,
+    under: (underHits / digits.length) * 100
   };
 }
 
-/* Entry digit selector */
-function entryDigit(data, setup){
-  if(!setup || !data.digits.length){
-    return {digit:null,score:0};
+function confirmation(data, setup) {
+  const recent =
+    data.digits.slice(-CONFIRMATION_WINDOW);
+
+  if (recent.length < CONFIRMATION_WINDOW) {
+    return {
+      hits: 0,
+      total: recent.length,
+      rate: 0
+    };
+  }
+
+  const hits =
+    setup === "over"
+      ? recent.filter(d => d > 2).length
+      : recent.filter(d => d < 7).length;
+
+  return {
+    hits,
+    total: recent.length,
+    rate: (hits / recent.length) * 100
+  };
+}
+
+function entryDigit(data, setup) {
+  const digits = data.digits;
+
+  if (digits.length < 20) {
+    return null;
   }
 
   const eligible =
-    setup === "OVER 2"
-      ? [3,4,5,6,7,8,9]
-      : [0,1,2,3,4,5,6];
+    setup === "over"
+      ? [3, 4, 5, 6, 7, 8, 9]
+      : [0, 1, 2, 3, 4, 5, 6];
 
-  const all = data.digits;
-  const recent = all.slice(-100);
+  const recent50 = digits.slice(-50);
+  const recent10 = digits.slice(-10);
 
-  let best = {
-    digit:null,
-    score:-1
-  };
+  let best = null;
 
-  eligible.forEach(d=>{
-    const allFreq =
-      all.filter(x=>x===d).length / all.length;
+  eligible.forEach(digit => {
+    const totalCount =
+      digits.filter(d => d === digit).length;
 
-    const recentFreq =
-      recent.length
-        ? recent.filter(x=>x===d).length / recent.length
+    const recent50Count =
+      recent50.filter(d => d === digit).length;
+
+    const recent10Count =
+      recent10.filter(d => d === digit).length;
+
+    const lastIndex =
+      digits.lastIndexOf(digit);
+
+    const recency =
+      lastIndex >= 0
+        ? clamp(
+            1 -
+              (digits.length - 1 - lastIndex) /
+                Math.max(1, digits.length),
+            0,
+            1
+          )
         : 0;
 
-    let recency = 0;
+    const totalRate =
+      (totalCount / digits.length) * 100;
 
-    for(let i=0;i<recent.length;i++){
-      if(recent[i]===d){
-        recency += i+1;
-      }
-    }
+    const recent50Rate =
+      (recent50Count / recent50.length) * 100;
 
-    const maxRecency =
-      recent.length * (recent.length+1) / 2 || 1;
-
-    const recencyScore =
-      recency / maxRecency;
+    const recent10Rate =
+      (recent10Count / recent10.length) * 100;
 
     const score =
-      (allFreq * 0.50) +
-      (recentFreq * 0.30) +
-      (recencyScore * 0.20);
+      totalRate * 0.30 +
+      recent50Rate * 0.30 +
+      recent10Rate * 0.20 +
+      recency * 100 * 0.10 +
+      (setup === "over" && digit > 2
+        ? 10
+        : setup === "under" && digit < 7
+        ? 10
+        : 0);
 
-    if(score > best.score){
+    if (!best || score > best.score) {
       best = {
-        digit:d,
-        score
+        digit,
+        score,
+        totalRate,
+        recent50Rate,
+        recent10Rate
       };
     }
   });
 
-  return {
-    digit:best.digit,
-    score:best.score * 100
-  };
+  return best;
 }
 
-/*
-  Main confirmation engine.
+function getSetupSignal(data, setup) {
+  const minimum =
+    Number($("sampleSize")?.value || 500);
 
-  It does NOT issue a strong entry merely because the
-  full sample percentage is high.
-*/
-function getSignal(data){
-
-  if(data.digits.length < sampleSize()){
+  if (data.digits.length < Math.min(minimum, 100)) {
     return {
-      state:"WAIT",
-      setup:null,
-      rate:0,
-      confidence:0,
-      entry:null,
-      confirmation:null,
-      reason:"Not enough ticks"
+      setup,
+      status: "WAIT",
+      confidence: 0,
+      rate: 0,
+      confirmation: 0,
+      entry: null
     };
   }
 
   const r = rates(data);
+  const setupRate = r[setup];
 
-  /*
-    Candidate setup from the full sample.
-    We still require the selected setup to be stronger
-    than the alternative.
-  */
-  let setup = null;
-  let rate = 0;
+  const alt =
+    setup === "over" ? r.under : r.over;
 
-  if(
-    r.over >= threshold() &&
-    r.over > r.under
-  ){
-    setup = "OVER 2";
-    rate = r.over;
-  }
-  else if(
-    r.under >= threshold() &&
-    r.under > r.over
-  ){
-    setup = "UNDER 7";
-    rate = r.under;
-  }
-
-  if(!setup){
-    return {
-      state:"NO ENTRY",
-      setup:null,
-      rate:Math.max(r.over,r.under),
-      confidence:0,
-      entry:null,
-      confirmation:null,
-      reason:"No dominant setup"
-    };
-  }
-
-  const conf = confirmation(data,setup);
-
-  /*
-    Confidence combines:
-      50% full sample rate
-      30% recent confirmation
-      20% margin over alternative setup
-  */
-  const alternative =
-    setup === "OVER 2" ? r.under : r.over;
+  const confirm =
+    confirmation(data, setup);
 
   const margin =
-    Math.max(0, Math.min(100, rate - alternative));
+    clamp(setupRate - alt, 0, 100);
 
   const confidence =
-    (rate * 0.50) +
-    (conf.rate * 0.30) +
-    (margin * 0.20);
+    clamp(
+      setupRate * 0.40 +
+        confirm.rate * 0.45 +
+        margin * 0.15,
+      0,
+      100
+    );
 
-  const entry = entryDigit(data,setup);
+  const threshold =
+    Number($("threshold")?.value || 75);
 
-  /*
-    Strong signal requires BOTH:
-      1. high confidence
-      2. 8/10 recent confirmation
-  */
-  if(
-    confidence >= STRONG_CONFIDENCE &&
-    conf.confirmed
-  ){
+  const strong =
+    setupRate >= threshold &&
+    confirm.hits >= REQUIRED_CONFIRMATIONS &&
+    confidence >= STRONG_CONFIDENCE;
 
-    return {
-      state:"STRONG ENTRY",
-      setup,
-      rate,
-      confidence,
-      entry,
-      confirmation:conf,
-      reason:"Strong multi-tick confirmation"
-    };
-  }
+  let status = "NO ENTRY";
 
-  /*
-    There is evidence, but it is not strong enough.
-  */
-  if(
-    rate >= threshold() ||
-    conf.supported >= 5
-  ){
-
-    return {
-      state:"WAIT / UNCLEAR",
-      setup,
-      rate,
-      confidence,
-      entry:null,
-      confirmation:conf,
-      reason:"Setup exists but confirmation is insufficient"
-    };
+  if (strong) {
+    status = "STRONG ENTRY";
+  } else if (
+    setupRate >= threshold ||
+    confirm.hits >= 5
+  ) {
+    status = "WAIT";
   }
 
   return {
-    state:"NO ENTRY",
-    setup:null,
-    rate,
+    setup,
+    status,
     confidence,
-    entry:null,
-    confirmation:conf,
-    reason:"Weak evidence"
+    rate: setupRate,
+    confirmation: confirm.hits,
+    entry: strong
+      ? entryDigit(data, setup)
+      : null
   };
 }
 
-/*
-  Walk-forward back-test.
+function getBothSignals(data) {
+  return {
+    over: getSetupSignal(data, "over"),
+    under: getSetupSignal(data, "under")
+  };
+}
 
-  Each historical point is tested using only the ticks
-  that existed BEFORE the next tick. This avoids using
-  future ticks to decide the past signal.
-*/
-function backtestDigits(digits){
-
-  if(!digits || digits.length < sampleSize()+1){
-    return {
-      tested:0,
-      signals:0,
-      correct:0,
-      accuracy:0
-    };
+function backtestSetup(digits, setup) {
+  if (digits.length < 100) {
+    return null;
   }
 
-  let signals = 0;
-  let correct = 0;
+  const start =
+    Math.max(
+      50,
+      digits.length - BACKTEST_COUNT
+    );
 
-  for(
-    let i=sampleSize();
-    i<digits.length-1;
-    i++
-  ){
+  let predictions = 0;
+  let hits = 0;
 
-    const history = digits.slice(0,i);
+  for (let i = start; i < digits.length - 1; i++) {
+    const previous = digits.slice(
+      0,
+      i
+    );
 
-    const fakeData = {
-      digits:history
-    };
-
-    const sig = getSignal(fakeData);
-
-    if(sig.state !== "STRONG ENTRY"){
+    if (previous.length < 50) {
       continue;
     }
 
-    signals++;
+    const recent =
+      previous.slice(-10);
 
-    const nextDigit = digits[i];
+    const success =
+      setup === "over"
+        ? recent.filter(d => d > 2).length
+        : recent.filter(d => d < 7).length;
 
-    let success = false;
-
-    if(sig.setup === "OVER 2"){
-      success = nextDigit > 2;
+    if (success < 8) {
+      continue;
     }
 
-    if(sig.setup === "UNDER 7"){
-      success = nextDigit < 7;
-    }
+    predictions++;
 
-    if(success){
-      correct++;
+    const next = digits[i];
+
+    const won =
+      setup === "over"
+        ? next > 2
+        : next < 7;
+
+    if (won) {
+      hits++;
     }
+  }
+
+  if (!predictions) {
+    return null;
   }
 
   return {
-    tested:digits.length - sampleSize(),
-    signals,
-    correct,
+    predictions,
+    hits,
     accuracy:
-      signals
-        ? correct/signals*100
-        : 0
+      (hits / predictions) * 100
   };
 }
 
-/* Process live tick */
-function processTick(symbol, quote){
-
-  const d = state[symbol];
-
-  const digit = digitFromQuote(quote);
-
-  if(digit === null) return;
-
-  d.lastDigit = digit;
-
-  d.quotes.push(quote);
-  d.digits.push(digit);
-
-  if(d.digits.length > 2000){
-    d.digits.shift();
-    d.quotes.shift();
-  }
-
-  totalTicks++;
-
-  $("liveTicks").textContent = totalTicks;
-
-  /*
-    Reduce cooldown by one tick.
-  */
-  if(d.cooldown > 0){
-    d.cooldown--;
-  }
-
-  /*
-    Evaluate the signal.
-  */
-  const sig = getSignal(d);
-
-  /*
-    Cooldown prevents repeated identical signals.
-  */
-  if(
-    sig.state === "STRONG ENTRY" &&
-    d.cooldown > 0 &&
-    d.lastStrongSetup === sig.setup
-  ){
-    sig.state = "WAIT / UNCLEAR";
-    sig.entry = null;
-    sig.reason = "Cooldown active";
-  }
-
-  /*
-    Start cooldown when a genuine new strong signal appears.
-  */
-  if(
-    sig.state === "STRONG ENTRY" &&
-    sig.setup !== d.lastStrongSetup
-  ){
-    d.lastStrongSetup = sig.setup;
-    d.cooldown = COOLDOWN_TICKS;
-  }
-
-  renderTable();
-
-  if(symbol === selectedSymbol){
-    renderSelected();
-  }
-}
-
-/* Render market table */
-function renderTable(){
-
-  const tbody = $("marketTable");
-
-  let active = 0;
-
-  tbody.innerHTML = MARKETS.map(([name,symbol])=>{
-
-    const d = state[symbol];
-    const r = rates(d);
-    const sig = getSignal(d);
-
-    if(sig.state === "STRONG ENTRY"){
-      active++;
-    }
-
-    let status =
-      d.error
-        ? "ERROR"
-        : d.available === false
-          ? "UNAVAILABLE"
-          : d.digits.length
-            ? "LIVE"
-            : "WAITING";
-
-    let stateClass = "waiting";
-
-    if(sig.state === "STRONG ENTRY"){
-      stateClass = "setup-over";
-    }
-    else if(sig.state === "NO ENTRY"){
-      stateClass = "setup-under";
-    }
-
-    return `<tr>
-      <td>${escapeHtml(name)}</td>
-
-      <td class="${
-        status==="LIVE"
-          ? "setup-over"
-          : "waiting"
-      }">${status}</td>
-
-      <td>${d.digits.length}</td>
-
-      <td>${r.over.toFixed(1)}%</td>
-
-      <td>${r.under.toFixed(1)}%</td>
-
-      <td class="${stateClass}">
-        ${sig.state}
-      </td>
-
-      <td>
-        ${sig.state==="STRONG ENTRY" && sig.setup
-          ? sig.setup
-          : "—"}
-      </td>
-
-      <td class="entry-digit">
-        ${
-          sig.state==="STRONG ENTRY"
-            ? sig.entry?.digit ?? "—"
-            : "—"
-        }
-      </td>
-
-      <td>
-        ${
-          sig.state==="STRONG ENTRY"
-            ? sig.confidence.toFixed(1)+"%"
-            : "—"
-        }
-      </td>
-
-    </tr>`;
-
-  }).join("");
-
-  $("activeSetups").textContent = active;
-}
-
-/* Render selected market */
-function renderSelected(){
-
-  const d = state[selectedSymbol];
-
-  const sig = getSignal(d);
-
-  const r = rates(d);
-
-  $("selectedTitle").textContent =
-    (d.name || selectedSymbol) + " Analysis";
-
-  $("selectedSetup").textContent =
-    sig.state;
-
-  $("selectedEntryDigit").textContent =
-    sig.state==="STRONG ENTRY"
-      ? sig.entry?.digit ?? "—"
-      : "—";
-
-  $("selectedEntryRate").textContent =
-    sig.state==="STRONG ENTRY"
-      ? sig.confidence.toFixed(1)+"%"
-      : "—";
-
-  $("selectedLastDigit").textContent =
-    d.lastDigit ?? "—";
-
-  $("digitDistribution").innerHTML =
-    Array.from({length:10},(_,i)=>{
-
-      const count =
-        d.digits.filter(x=>x===i).length;
-
-      const pct =
-        d.digits.length
-          ? count/d.digits.length*100
-          : 0;
-
-      return `
-        <div class="digit-box">
-          <b>${i}</b>
-          <small>
-            ${count} (${pct.toFixed(1)}%)
-          </small>
-        </div>
-      `;
-
-    }).join("");
-
-  $("recentSequence").textContent =
-    d.digits.slice(-40).join("  ") || "—";
-
-  if(d.error){
-
-    $("analysisMessage").textContent =
-      d.error;
-
-  }
-  else if(d.available === false){
-
-    $("analysisMessage").textContent =
-      "Deriv did not advertise this symbol as available.";
-
-  }
-  else if(sig.state === "STRONG ENTRY"){
-
-    $("analysisMessage").textContent =
-      `🟢 STRONG ENTRY — ${sig.setup}. ` +
-      `Confidence ${sig.confidence.toFixed(1)}%. ` +
-      `${sig.confirmation.supported}/${sig.confirmation.total} ` +
-      `recent ticks confirm the setup. ` +
-      `Candidate digit: ${sig.entry.digit}.`;
-
-  }
-  else if(sig.state === "WAIT / UNCLEAR"){
-
-    $("analysisMessage").textContent =
-      `🟡 WAIT / UNCLEAR — ${sig.setup || "No confirmed setup"}. ` +
-      `Confidence ${sig.confidence.toFixed(1)}%. ` +
-      `Recent confirmation: ` +
-      `${sig.confirmation?.supported || 0}/` +
-      `${sig.confirmation?.total || 0}.`;
-
-  }
-  else{
-
-    $("analysisMessage").textContent =
-      `🔴 NO ENTRY — ` +
-      `Over 2: ${r.over.toFixed(1)}%, ` +
-      `Under 7: ${r.under.toFixed(1)}%. ` +
-      `${sig.reason}.`;
-
-  }
-
-  $("recentTicks").textContent =
-    d.quotes.slice(-20)
-      .map(q=>String(q))
-      .join("  |  ") || "—";
-}
-
-/*
-  Request historical ticks for back-testing.
-*/
-function requestHistory(symbol, reqId){
-
-  if(!socket || socket.readyState !== WebSocket.OPEN){
+function updateBacktest(data) {
+  if (data.digits.length < 100) {
     return;
   }
 
-  socket.send(JSON.stringify({
-    ticks_history:symbol,
-    end:"latest",
-    count:BACKTEST_COUNT,
-    style:"ticks",
-    subscribe:0,
-    req_id:reqId
-  }));
+  data.backtest.over =
+    backtestSetup(data.digits, "over");
+
+  data.backtest.under =
+    backtestSetup(data.digits, "under");
 }
 
-/* Connect to Deriv */
-function connect(){
+function applyCooldown(data, setup, signal) {
+  const tracker = data[setup];
 
-  if(socket){
-    socket.close();
+  if (tracker.cooldown > 0) {
+    tracker.cooldown--;
   }
 
-  socket = new WebSocket(DERIV_URL);
+  if (
+    signal.status === "STRONG ENTRY" &&
+    tracker.cooldown === 0
+  ) {
+    tracker.lastStrong = true;
+    tracker.cooldown = COOLDOWN_TICKS;
+  } else {
+    tracker.lastStrong = false;
+  }
+
+  return signal;
+}
+
+function processTick(symbol, quote) {
+  const data = state[symbol];
+
+  if (!data) {
+    return;
+  }
+
+  const digit = digitFromQuote(quote);
+
+  if (!Number.isFinite(digit)) {
+    return;
+  }
+
+  data.quotes.push(Number(quote));
+  data.digits.push(digit);
+
+  const sample =
+    Number($("sampleSize")?.value || 500);
+
+  if (data.digits.length > sample) {
+    data.digits.shift();
+  }
+
+  if (data.quotes.length > sample) {
+    data.quotes.shift();
+  }
+
+  data.lastDigit = digit;
+  liveTicks++;
+
+  const signals = getBothSignals(data);
+
+  signals.over =
+    applyCooldown(
+      data,
+      "over",
+      signals.over
+    );
+
+  signals.under =
+    applyCooldown(
+      data,
+      "under",
+      signals.under
+    );
+
+  if (
+    data.digits.length % 50 === 0
+  ) {
+    updateBacktest(data);
+  }
+
+  renderTable();
+  renderActiveEntries();
+  renderSelected();
+  renderSummary();
+}
+
+function requestHistory(symbol, id) {
+  if (!socket ||
+      socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  socket.send(
+    JSON.stringify({
+      ticks_history: symbol,
+      count: 500,
+      end: "latest",
+      style: "ticks",
+      req_id: id
+    })
+  );
+}
+
+function connect() {
+  if (socket) {
+    try {
+      socket.close();
+    } catch (e) {}
+  }
 
   $("connectionBadge").textContent =
     "CONNECTING";
@@ -642,7 +451,11 @@ function connect(){
   $("connectionBadge").className =
     "badge waiting";
 
-  socket.onopen = ()=>{
+  socket =
+    new WebSocket(DERIV_URL);
+
+  socket.onopen = () => {
+    console.log("DERIV WEBSOCKET CONNECTED");
 
     $("connectionBadge").textContent =
       "CONNECTED";
@@ -650,251 +463,592 @@ function connect(){
     $("connectionBadge").className =
       "badge connected";
 
-    socket.send(JSON.stringify({
-      active_symbols:"brief",
-      req_id:100
-    }));
-
+    socket.send(
+      JSON.stringify({
+        active_symbols: "brief",
+        req_id: ++reqId
+      })
+    );
   };
 
-  socket.onmessage = e=>{
-
+  socket.onmessage = event => {
     let msg;
 
-    try{
-      msg = JSON.parse(e.data);
-    }
-    catch{
+    try {
+      msg = JSON.parse(event.data);
+    } catch (error) {
+      console.log(
+        "INVALID DERIV MESSAGE",
+        event.data
+      );
       return;
     }
 
-    /* Handle API errors */
-    if(msg.error){
-
+    if (msg.error) {
       console.log(
         "DERIV ERROR:",
         msg.error
       );
 
-      const req = msg.echo_req || {};
+      const req =
+        msg.echo_req || {};
 
-      if(req.ticks){
+      if (req.ticks) {
+        const symbol = req.ticks;
 
-        const s = req.ticks;
-
-        if(state[s]){
-
-          state[s].error =
+        if (state[symbol]) {
+          state[symbol].error =
             msg.error.message ||
             "Subscription error";
 
-          state[s].available = false;
+          state[symbol].available =
+            false;
         }
       }
 
       renderTable();
+      renderActiveEntries();
       renderSelected();
-
       return;
     }
 
-    /* Active symbols */
-    if(msg.msg_type === "active_symbols"){
-
+    if (
+      msg.msg_type ===
+      "active_symbols"
+    ) {
       const available =
         new Set(
           (msg.active_symbols || [])
-            .map(x=>x.underlying_symbol || x.symbol)
+            .map(
+              x =>
+                x.underlying_symbol ||
+                x.symbol
+            )
         );
 
-      MARKETS.forEach(([name,symbol],i)=>{
+      MARKETS.forEach(
+        ([name, symbol], index) => {
+          state[symbol].available =
+            available.has(symbol);
 
-        state[symbol].available =
-          available.has(symbol);
+          if (
+            state[symbol].available
+          ) {
+            socket.send(
+              JSON.stringify({
+                ticks: symbol,
+                subscribe: 1,
+                req_id:
+                  1000 + index
+              })
+            );
 
-        if(state[symbol].available){
-
-          /* Live stream */
-          socket.send(JSON.stringify({
-            ticks:symbol,
-            subscribe:1,
-            req_id:1000+i
-          }));
-
-          /* Historical data for back-test */
-          requestHistory(
-            symbol,
-            2000+i
-          );
-
+            requestHistory(
+              symbol,
+              2000 + index
+            );
+          }
         }
-        else{
-
-          state[symbol].error =
-            "Symbol not returned by active_symbols.";
-        }
-
-      });
+      );
 
       renderTable();
+      return;
+    }
+
+    if (
+      msg.msg_type ===
+      "history"
+    ) {
+      const symbol =
+        msg.echo_req?.ticks_history;
+
+      if (!symbol || !state[symbol]) {
+        return;
+      }
+
+      const prices =
+        msg.history?.prices || [];
+
+      state[symbol].quotes =
+        prices.map(Number);
+
+      state[symbol].digits =
+        state[symbol].quotes
+          .map(digitFromQuote)
+          .filter(Number.isFinite);
+
+      if (
+        state[symbol].digits.length
+      ) {
+        state[symbol].lastDigit =
+          state[symbol].digits[
+            state[symbol].digits.length - 1
+          ];
+      }
+
+      updateBacktest(
+        state[symbol]
+      );
+
+      renderTable();
+      renderActiveEntries();
       renderSelected();
+      renderSummary();
 
       return;
     }
 
-    /* Historical ticks */
-    if(msg.msg_type === "history" && msg.history){
-
-      const prices =
-        msg.history.prices || [];
-
-      const digits =
-        prices
-          .map(digitFromQuote)
-          .filter(d=>d !== null);
-
+    if (
+      msg.msg_type === "tick"
+    ) {
       const symbol =
-        msg.echo_req?.ticks_history ||
-        null;
+        msg.tick?.symbol;
 
-      if(
+      const quote =
+        msg.tick?.quote;
+
+      if (
         symbol &&
-        state[symbol] &&
-        digits.length
-      ){
-
-        state[symbol].backtest =
-          backtestDigits(digits);
-
-        console.log(
-          "BACKTEST",
+        quote !== undefined
+      ) {
+        processTick(
           symbol,
-          state[symbol].backtest
+          quote
         );
-
       }
 
       return;
     }
-
-    /* Live tick */
-    if(msg.msg_type === "tick" && msg.tick){
-
-      processTick(
-        msg.tick.symbol,
-        msg.tick.quote
-      );
-
-    }
-
   };
 
-  socket.onclose = ()=>{
+  alert("DERIV WEBSOCKET ERROR - check internet connection or Deriv endpoint");socket.onerror = error => {
+    console.log(
+      "DERIV WEBSOCKET ERROR:",
+      error
+    );
+
+    $("connectionBadge").textContent =
+      "CONNECTION ERROR";
+
+    $("connectionBadge").className =
+      "badge error";
+  };
+
+  socket.onclose = event => {
+    console.log(
+      "DERIV WEBSOCKET CLOSED:",
+      event.code,
+      event.reason
+    );
 
     $("connectionBadge").textContent =
       "DISCONNECTED";
 
     $("connectionBadge").className =
-      "badge disconnected";
-
-  };
-
-  socket.onerror = ()=>{
-
-    $("connectionBadge").textContent =
-      "ERROR";
-
-    $("connectionBadge").className =
-      "badge disconnected";
-
+      "badge error";
   };
 }
 
-/* Clear live data */
-function clearData(){
+function renderSummary() {
+  const marketCount =
+    MARKETS.filter(
+      ([name, symbol]) =>
+        state[symbol].available !== false
+    ).length;
 
-  totalTicks = 0;
+  if ($("marketCount")) {
+    $("marketCount").textContent =
+      marketCount;
+  }
 
-  MARKETS.forEach(([name,symbol])=>{
-
-    state[symbol].digits = [];
-    state[symbol].quotes = [];
-    state[symbol].lastDigit = null;
-    state[symbol].error = null;
-
-    state[symbol].lastStrongSetup = null;
-    state[symbol].cooldown = 0;
-    state[symbol].backtest = null;
-
-  });
-
-  $("liveTicks").textContent = "0";
-
-  renderTable();
-  renderSelected();
+  if ($("liveTicks")) {
+    $("liveTicks").textContent =
+      liveTicks;
+  }
 }
 
-$("connectBtn").addEventListener(
-  "click",
-  connect
-);
-
-$("clearBtn").addEventListener(
-  "click",
-  clearData
-);
-
-$("sampleSize").addEventListener(
-  "change",
-  ()=>{
-    renderTable();
-    renderSelected();
+function signalClass(signal) {
+  if (signal.status === "STRONG ENTRY") {
+    return "setup-strong";
   }
-);
 
-$("signalThreshold").addEventListener(
-  "change",
-  ()=>{
-    renderTable();
-    renderSelected();
+  if (signal.status === "WAIT") {
+    return "setup-wait";
   }
-);
 
-$("marketSelect").addEventListener(
-  "change",
-  e=>{
-    selectedSymbol = e.target.value;
-    renderSelected();
+  return "setup-no";
+}
+
+function renderTable() {
+  const body =
+    $("marketTableBody");
+
+  if (!body) {
+    return;
   }
-);
 
-$("marketTable").addEventListener(
-  "click",
-  e=>{
+  body.innerHTML = "";
 
-    const row =
-      e.target.closest("tr");
+  MARKETS.forEach(
+    ([name, symbol]) => {
+      const data = state[symbol];
 
-    if(!row) return;
+      const signals =
+        getBothSignals(data);
 
-    const name =
-      row.cells[0]?.textContent;
+      const tr =
+        document.createElement("tr");
 
-    const found =
-      MARKETS.find(
-        x=>x[0]===name
+      tr.onclick = () => {
+        selectedSymbol = symbol;
+
+        if ($("marketSelect")) {
+          $("marketSelect").value =
+            symbol;
+        }
+
+        renderSelected();
+      };
+
+      const status =
+        data.error
+          ? "ERROR"
+          : data.available === false
+            ? "UNAVAILABLE"
+            : "LIVE";
+
+      const td = content => {
+        const cell =
+          document.createElement("td");
+
+        cell.innerHTML = content;
+
+        return cell;
+      };
+
+      tr.appendChild(
+        td(`<strong>${name}</strong>`)
       );
 
-    if(found){
+      tr.appendChild(
+        td(`<span class="live-status">${status}</span>`)
+      );
 
-      selectedSymbol = found[1];
+      tr.appendChild(
+        td(data.digits.length)
+      );
 
-      renderSelected();
+      tr.appendChild(
+        td(`${rates(data).over.toFixed(1)}%`)
+      );
 
+      tr.appendChild(
+        td(`${rates(data).under.toFixed(1)}%`)
+      );
+
+      tr.appendChild(
+        td(
+          `<span class="${signalClass(
+            signals.over
+          )}">${signals.over.status}</span>`
+        )
+      );
+
+      tr.appendChild(
+        td(
+          signals.over.entry
+            ? signals.over.entry.digit
+            : "—"
+        )
+      );
+
+      tr.appendChild(
+        td(
+          `${signals.over.confidence.toFixed(0)}%`
+        )
+      );
+
+      tr.appendChild(
+        td(
+          `<span class="${signalClass(
+            signals.under
+          )}">${signals.under.status}</span>`
+        )
+      );
+
+      tr.appendChild(
+        td(
+          signals.under.entry
+            ? signals.under.entry.digit
+            : "—"
+        )
+      );
+
+      tr.appendChild(
+        td(
+          `${signals.under.confidence.toFixed(0)}%`
+        )
+      );
+
+      body.appendChild(tr);
     }
+  );
+}
 
+function renderActiveEntries() {
+  const box =
+    $("activeEntries");
+
+  if (!box) {
+    return;
   }
-);
 
-renderTable();
-renderSelected();
+  box.innerHTML = "";
+
+  let count = 0;
+
+  MARKETS.forEach(
+    ([name, symbol]) => {
+      const data = state[symbol];
+
+      const signals =
+        getBothSignals(data);
+
+      ["over", "under"].forEach(
+        setup => {
+          const signal =
+            signals[setup];
+
+          if (
+            signal.status !==
+            "STRONG ENTRY"
+          ) {
+            return;
+          }
+
+          count++;
+
+          const entry =
+            signal.entry;
+
+          const card =
+            document.createElement("div");
+
+          card.className =
+            "entry-card";
+
+          const backtest =
+            data.backtest[setup];
+
+          const accuracy =
+            backtest
+              ? `${backtest.accuracy.toFixed(1)}%`
+              : "—";
+
+          card.innerHTML = `
+            <div class="entry-main">
+              <strong>${name}</strong>
+              <span>${setupName(setup)}</span>
+            </div>
+
+            <div class="entry-stats">
+              <span>
+                Entry Digit:
+                <b>${entry ? entry.digit : "—"}</b>
+              </span>
+
+              <span>
+                Confidence:
+                <b>${signal.confidence.toFixed(0)}%</b>
+              </span>
+
+              <span>
+                Setup Rate:
+                <b>${signal.rate.toFixed(1)}%</b>
+              </span>
+
+              <span>
+                Confirmation:
+                <b>${signal.confirmation}/10</b>
+              </span>
+
+              <span>
+                Backtest:
+                <b>${accuracy}</b>
+              </span>
+            </div>
+          `;
+
+          box.appendChild(card);
+        }
+      );
+    }
+  );
+
+  if ($("activeSetups")) {
+    $("activeSetups").textContent =
+      count;
+  }
+
+  if (!count) {
+    box.innerHTML = `
+      <div class="no-entry">
+        🟡 No strong entries at the moment.
+        Waiting for independent OVER 2 or UNDER 7 confirmation.
+      </div>
+    `;
+  }
+}
+
+function renderSelected() {
+  const data =
+    state[selectedSymbol];
+
+  if (!data) {
+    return;
+  }
+
+  const signals =
+    getBothSignals(data);
+
+  if ($("selectedTitle")) {
+    $("selectedTitle").textContent =
+      data.name;
+  }
+
+  if ($("selectedSetup")) {
+    $("selectedSetup").textContent =
+      `OVER 2: ${signals.over.status} | UNDER 7: ${signals.under.status}`;
+  }
+
+  if ($("selectedEntryDigit")) {
+    const overEntry =
+      signals.over.entry?.digit ?? "—";
+
+    const underEntry =
+      signals.under.entry?.digit ?? "—";
+
+    $("selectedEntryDigit").textContent =
+      `OVER: ${overEntry} | UNDER: ${underEntry}`;
+  }
+
+  if ($("selectedEntryRate")) {
+    $("selectedEntryRate").textContent =
+      `OVER: ${signals.over.confidence.toFixed(0)}% | UNDER: ${signals.under.confidence.toFixed(0)}%`;
+  }
+
+  if ($("selectedLastDigit")) {
+    $("selectedLastDigit").textContent =
+      data.lastDigit ?? "—";
+  }
+
+  renderDistribution(data);
+  renderRecent(data);
+}
+
+function renderDistribution(data) {
+  const box =
+    $("digitDistribution");
+
+  if (!box) {
+    return;
+  }
+
+  const counts =
+    Array(10).fill(0);
+
+  data.digits.forEach(d => {
+    if (d >= 0 && d <= 9) {
+      counts[d]++;
+    }
+  });
+
+  const total =
+    data.digits.length || 1;
+
+  box.innerHTML =
+    counts
+      .map(
+        (count, digit) => `
+          <div class="digit-item">
+            <span>${digit}</span>
+            <b>${count}</b>
+            <small>${(
+              (count / total) *
+              100
+            ).toFixed(1)}%</small>
+          </div>
+        `
+      )
+      .join("");
+}
+
+function renderRecent(data) {
+  const box =
+    $("recentSequence");
+
+  if (!box) {
+    return;
+  }
+
+  box.textContent =
+    data.digits
+      .slice(-30)
+      .join(" ");
+}
+
+function bindControls() {
+  if ($("marketSelect")) {
+    $("marketSelect").addEventListener(
+      "change",
+      e => {
+        selectedSymbol =
+          e.target.value;
+
+        renderSelected();
+      }
+    );
+  }
+
+  [
+    "sampleSize",
+    "threshold"
+  ].forEach(id => {
+    if ($(id)) {
+      $(id).addEventListener(
+        "change",
+        () => {
+          MARKETS.forEach(
+            ([name, symbol]) => {
+              state[symbol].backtest.over =
+                null;
+
+              state[symbol].backtest.under =
+                null;
+            }
+          );
+
+          renderTable();
+          renderActiveEntries();
+          renderSelected();
+        }
+      );
+    }
+  });
+}
+
+function initialise() {
+  bindControls();
+
+  renderTable();
+  renderActiveEntries();
+  renderSelected();
+  renderSummary();
+
+  connect();
+}
+
+window.addEventListener(
+  "load",
+  initialise
+);
