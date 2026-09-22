@@ -27,6 +27,15 @@ let reqId = 5000;
 
 const state = {};
 
+const liveResults = {
+  signals: 0,
+  wins: 0,
+  losses: 0,
+  history: [],
+  pending: []
+};
+
+
 MARKETS.forEach(([name, symbol]) => {
   state[symbol] = {
     name,
@@ -363,6 +372,111 @@ function applyCooldown(data, setup, signal) {
   return signal;
 }
 
+function recordSignal(symbol, setup, signal) {
+  if (!signal || signal.status !== "STRONG ENTRY" || !signal.entry) {
+    return;
+  }
+
+  liveResults.signals++;
+
+  liveResults.pending.push({
+    symbol,
+    setup,
+    entry: signal.entry.digit
+  });
+
+  if (liveResults.pending.length > 100) {
+    liveResults.pending.shift();
+  }
+}
+
+function evaluatePendingSignals(symbol, digit) {
+  if (!liveResults.pending.length) {
+    return;
+  }
+
+  const remaining = [];
+
+  liveResults.pending.forEach(signal => {
+    if (signal.symbol !== symbol) {
+      remaining.push(signal);
+      return;
+    }
+
+    const won =
+      signal.setup === "over"
+        ? digit > 2
+        : digit < 7;
+
+    if (won) {
+      liveResults.wins++;
+    } else {
+      liveResults.losses++;
+    }
+
+    liveResults.history.unshift({
+      ...signal,
+      result: won ? "WIN" : "LOSS",
+      resultDigit: digit
+    });
+  });
+
+  liveResults.pending = remaining;
+
+  if (liveResults.history.length > 20) {
+    liveResults.history.length = 20;
+  }
+
+  renderLiveResults();
+}
+
+function renderLiveResults() {
+  const signals = $("resultSignals");
+  const wins = $("resultWins");
+  const losses = $("resultLosses");
+  const rate = $("resultWinRate");
+  const container = $("signalResults");
+
+  if (!signals || !wins || !losses || !rate || !container) {
+    return;
+  }
+
+  signals.textContent = liveResults.signals;
+  wins.textContent = liveResults.wins;
+  losses.textContent = liveResults.losses;
+
+  const completed =
+    liveResults.wins + liveResults.losses;
+
+  rate.textContent =
+    completed > 0
+      ? `${((liveResults.wins / completed) * 100).toFixed(1)}%`
+      : "—";
+
+  if (!liveResults.history.length) {
+    container.innerHTML =
+      '<div class="no-entry">🟡 No completed live signals yet.</div>';
+    return;
+  }
+
+  container.innerHTML =
+    liveResults.history
+      .map(item => `
+        <div class="message">
+          <b>${MARKETS.find(m => m[1] === item.symbol)?.[0] || item.symbol}</b>
+          —
+          ${item.setup === "over" ? "OVER 2" : "UNDER 7"}
+          —
+          Entry: <b>${item.entry}</b>
+          —
+          Result digit: <b>${item.resultDigit}</b>
+          —
+          <b>${item.result}</b>
+        </div>
+      `)
+      .join("");
+}
+
 function processTick(symbol, quote) {
   const data = state[symbol];
 
@@ -393,6 +507,10 @@ function processTick(symbol, quote) {
   data.lastDigit = digit;
   liveTicks++;
 
+  // Resolve signals from the previous tick before creating
+  // a new signal from the current tick.
+  evaluatePendingSignals(symbol, digit);
+
   const signals = getBothSignals(data);
 
   signals.over =
@@ -409,6 +527,15 @@ function processTick(symbol, quote) {
       signals.under
     );
 
+  // Record only newly released STRONG ENTRY signals.
+  if (data.over.lastStrong) {
+    recordSignal(symbol, "over", signals.over);
+  }
+
+  if (data.under.lastStrong) {
+    recordSignal(symbol, "under", signals.under);
+  }
+
   if (
     data.digits.length % 50 === 0
   ) {
@@ -419,6 +546,7 @@ function processTick(symbol, quote) {
   renderActiveEntries();
   renderSelected();
   renderSummary();
+  renderLiveResults();
 }
 
 function requestHistory(symbol, id) {
