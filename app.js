@@ -31,6 +31,7 @@ const liveResults = {
   signals: 0,
   wins: 0,
   losses: 0,
+  nextId: 1,
   history: [],
   pending: []
 };
@@ -54,6 +55,11 @@ MARKETS.forEach(([name, symbol]) => {
     under: {
       lastStrong: false,
       cooldown: 0
+    },
+
+    held: {
+      over: null,
+      under: null
     },
 
     backtest: {
@@ -204,6 +210,83 @@ function entryDigit(data, setup) {
   return best;
 }
 
+
+function detectStrategy(data, setup) {
+  const digits = data.digits;
+
+  if (digits.length < 20) {
+    return {
+      type: "WAIT",
+      score: 0
+    };
+  }
+
+  const recent10 = digits.slice(-10);
+  const previous10 = digits.slice(-20, -10);
+
+  const qualifies = digit => {
+    return setup === "over"
+      ? digit > 2
+      : digit < 7;
+  };
+
+  const recentRate =
+    recent10.filter(qualifies).length / 10;
+
+  const previousRate =
+    previous10.filter(qualifies).length / 10;
+
+  const momentum =
+    recentRate - previousRate;
+
+  /*
+   * CONTINUATION:
+   * Recent qualifying digits remain strong and
+   * momentum is stable or improving.
+   */
+  const continuation =
+    recentRate >= 0.70 &&
+    momentum >= -0.10;
+
+  /*
+   * REVERSAL:
+   * The previous window was stronger, but the
+   * recent window has weakened substantially.
+   */
+  const reversal =
+    previousRate >= 0.70 &&
+    recentRate <= 0.60 &&
+    momentum <= -0.10;
+
+  if (continuation) {
+    return {
+      type: "CONTINUATION",
+      score: clamp(
+        recentRate * 100 +
+        momentum * 50,
+        0,
+        100
+      )
+    };
+  }
+
+  if (reversal) {
+    return {
+      type: "REVERSAL",
+      score: clamp(
+        (1 - Math.abs(momentum)) * 100,
+        0,
+        100
+      )
+    };
+  }
+
+  return {
+    type: "WAIT",
+    score: 0
+  };
+}
+
 function getSetupSignal(data, setup) {
   const minimum =
     Number($("sampleSize")?.value || 500);
@@ -228,6 +311,9 @@ function getSetupSignal(data, setup) {
   const confirm =
     confirmation(data, setup);
 
+  const strategy =
+    detectStrategy(data, setup);
+
   const margin =
     clamp(setupRate - alt, 0, 100);
 
@@ -246,7 +332,8 @@ function getSetupSignal(data, setup) {
   const strong =
     setupRate >= threshold &&
     confirm.hits >= REQUIRED_CONFIRMATIONS &&
-    confidence >= STRONG_CONFIDENCE;
+    confidence >= STRONG_CONFIDENCE &&
+    strategy.type !== "WAIT";
 
   let status = "NO ENTRY";
 
@@ -265,6 +352,8 @@ function getSetupSignal(data, setup) {
     confidence,
     rate: setupRate,
     confirmation: confirm.hits,
+    strategy: strategy.type,
+    strategyScore: strategy.score,
     entry: strong
       ? entryDigit(data, setup)
       : null
@@ -372,14 +461,99 @@ function applyCooldown(data, setup, signal) {
   return signal;
 }
 
-function recordSignal(symbol, setup, signal) {
+
+function holdSignal(data, setup, signal, signalId = null) {
   if (!signal || signal.status !== "STRONG ENTRY" || !signal.entry) {
     return;
   }
 
+  const backtestAccuracy = data.backtest[setup]?.accuracy || 0;
+
+  const strength = clamp(
+    signal.confidence * 0.30 +
+    signal.rate * 0.25 +
+    (signal.confirmation / 10) * 100 * 0.20 +
+    (signal.strategyScore || 0) * 0.10 +
+    backtestAccuracy * 0.10 +
+    clamp(signal.entry.score || 0, 0, 100) * 0.05,
+    0,
+    100
+  );
+
+  const current = data.held[setup];
+  const REPLACEMENT_MARGIN = 2;
+
+  if (current && strength < current.strength + REPLACEMENT_MARGIN) {
+    return;
+  }
+
+  data.held[setup] = {
+    setup,
+    strategy: signal.strategy,
+    entry: signal.entry.digit,
+    confidence: signal.confidence,
+    rate: signal.rate,
+    confirmation: signal.confirmation,
+    strength,
+    active: true,
+    result: "PENDING",
+    signalId
+  };
+}
+
+function updateHeldSignals(data, signals) {
+  ["over", "under"].forEach(setup => {
+    const held = data.held[setup];
+    const current = signals[setup];
+
+    if (!held) {
+      return;
+    }
+
+    if (!current || current.status !== "STRONG ENTRY" || !current.entry) {
+      return;
+    }
+
+    const backtestAccuracy = data.backtest[setup]?.accuracy || 0;
+
+    const currentStrength = clamp(
+      current.confidence * 0.30 +
+      current.rate * 0.25 +
+      (current.confirmation / 10) * 100 * 0.20 +
+      (current.strategyScore || 0) * 0.10 +
+      backtestAccuracy * 0.10 +
+      clamp(current.entry.score || 0, 0, 100) * 0.05,
+      0,
+      100
+    );
+
+    if (currentStrength >= held.strength + 2) {
+      data.held[setup] = {
+        ...held,
+        strategy: current.strategy,
+        entry: current.entry.digit,
+        confidence: current.confidence,
+        rate: current.rate,
+        confirmation: current.confirmation,
+        strength: currentStrength,
+        active: true,
+        result: "PENDING",
+        signalId: null
+      };
+    }
+  });
+}
+
+function recordSignal(symbol, setup, signal) {
+  if (!signal || signal.status !== "STRONG ENTRY" || !signal.entry) {
+    return null;
+  }
+
+  const id = liveResults.nextId++;
   liveResults.signals++;
 
   liveResults.pending.push({
+    id,
     symbol,
     setup,
     entry: signal.entry.digit
@@ -388,6 +562,8 @@ function recordSignal(symbol, setup, signal) {
   if (liveResults.pending.length > 100) {
     liveResults.pending.shift();
   }
+
+  return id;
 }
 
 function evaluatePendingSignals(symbol, digit) {
@@ -403,10 +579,7 @@ function evaluatePendingSignals(symbol, digit) {
       return;
     }
 
-    const won =
-      signal.setup === "over"
-        ? digit > 2
-        : digit < 7;
+    const won = signal.setup === "over" ? digit > 2 : digit < 7;
 
     if (won) {
       liveResults.wins++;
@@ -419,6 +592,16 @@ function evaluatePendingSignals(symbol, digit) {
       result: won ? "WIN" : "LOSS",
       resultDigit: digit
     });
+
+    const held = state[symbol]?.held?.[signal.setup];
+
+    if (held && held.signalId === signal.id) {
+      held.result = won ? "WIN" : "LOSS";
+
+      if (!won) {
+        state[symbol].held[signal.setup] = null;
+      }
+    }
   });
 
   liveResults.pending = remaining;
@@ -493,8 +676,7 @@ function processTick(symbol, quote) {
   data.quotes.push(Number(quote));
   data.digits.push(digit);
 
-  const sample =
-    Number($("sampleSize")?.value || 500);
+  const sample = Number(document.getElementById("sampleSize")?.value || 500);
 
   if (data.digits.length > sample) {
     data.digits.shift();
@@ -507,38 +689,26 @@ function processTick(symbol, quote) {
   data.lastDigit = digit;
   liveTicks++;
 
-  // Resolve signals from the previous tick before creating
-  // a new signal from the current tick.
   evaluatePendingSignals(symbol, digit);
 
   const signals = getBothSignals(data);
 
-  signals.over =
-    applyCooldown(
-      data,
-      "over",
-      signals.over
-    );
+  signals.over = applyCooldown(data, "over", signals.over);
+  signals.under = applyCooldown(data, "under", signals.under);
 
-  signals.under =
-    applyCooldown(
-      data,
-      "under",
-      signals.under
-    );
+  updateHeldSignals(data, signals);
 
-  // Record only newly released STRONG ENTRY signals.
   if (data.over.lastStrong) {
-    recordSignal(symbol, "over", signals.over);
+    const overId = recordSignal(symbol, "over", signals.over);
+    holdSignal(data, "over", signals.over, overId);
   }
 
   if (data.under.lastStrong) {
-    recordSignal(symbol, "under", signals.under);
+    const underId = recordSignal(symbol, "under", signals.under);
+    holdSignal(data, "under", signals.under, underId);
   }
 
-  if (
-    data.digits.length % 50 === 0
-  ) {
+  if (data.digits.length % 50 === 0) {
     updateBacktest(data);
   }
 
@@ -874,47 +1044,66 @@ function renderTable() {
         td(`${rates(data).under.toFixed(1)}%`)
       );
 
-      tr.appendChild(
-        td(
-          `<span class="${signalClass(
+      const overHeld = data.held.over;
+      const underHeld = data.held.under;
+
+      const overDisplay = overHeld
+        ? `<span class="strong-entry">STRONG ENTRY</span>
+           <br><small>${overHeld.strategy}</small>
+           <br>Entry: <b>${overHeld.entry}</b>
+           <br>Confidence: ${overHeld.confidence.toFixed(0)}%
+           <br>Status: <b>${overHeld.result || "PENDING"}</b><br>Strength: ${overHeld.strength.toFixed(1)}/100`
+        : `<span class="${signalClass(
             signals.over
-          )}">${signals.over.status}</span>`
-        )
-      );
+          )}">${signals.over.status}</span>`;
 
-      tr.appendChild(
-        td(
-          signals.over.entry
-            ? signals.over.entry.digit
-            : "—"
-        )
-      );
-
-      tr.appendChild(
-        td(
-          `${signals.over.confidence.toFixed(0)}%`
-        )
-      );
-
-      tr.appendChild(
-        td(
-          `<span class="${signalClass(
+      const underDisplay = underHeld
+        ? `<span class="strong-entry">STRONG ENTRY</span>
+           <br><small>${underHeld.strategy}</small>
+           <br>Entry: <b>${underHeld.entry}</b>
+           <br>Confidence: ${underHeld.confidence.toFixed(0)}%
+           <br>Status: <b>${underHeld.result || "PENDING"}</b><br>Strength: ${underHeld.strength.toFixed(1)}/100`
+        : `<span class="${signalClass(
             signals.under
-          )}">${signals.under.status}</span>`
+          )}">${signals.under.status}</span>`;
+
+      tr.appendChild(td(overDisplay));
+
+      tr.appendChild(
+        td(
+          overHeld
+            ? overHeld.entry
+            : signals.over.entry
+              ? signals.over.entry.digit
+              : "—"
         )
       );
 
       tr.appendChild(
         td(
-          signals.under.entry
-            ? signals.under.entry.digit
-            : "—"
+          overHeld
+            ? `${overHeld.confidence.toFixed(0)}%`
+            : `${signals.over.confidence.toFixed(0)}%`
+        )
+      );
+
+      tr.appendChild(td(underDisplay));
+
+      tr.appendChild(
+        td(
+          underHeld
+            ? underHeld.entry
+            : signals.under.entry
+              ? signals.under.entry.digit
+              : "—"
         )
       );
 
       tr.appendChild(
         td(
-          `${signals.under.confidence.toFixed(0)}%`
+          underHeld
+            ? `${underHeld.confidence.toFixed(0)}%`
+            : `${signals.under.confidence.toFixed(0)}%`
         )
       );
 
@@ -924,107 +1113,127 @@ function renderTable() {
 }
 
 function renderActiveEntries() {
-  const box =
-    $("activeEntries");
+  const overBox = $("activeOverEntries");
+  const underBox = $("activeUnderEntries");
 
-  if (!box) {
+  if (!overBox || !underBox) {
     return;
   }
 
-  box.innerHTML = "";
+  overBox.innerHTML = "";
+  underBox.innerHTML = "";
 
-  let count = 0;
+  const active = {
+    over: [],
+    under: []
+  };
 
-  MARKETS.forEach(
-    ([name, symbol]) => {
-      const data = state[symbol];
+  MARKETS.forEach(([name, symbol]) => {
+    const data = state[symbol];
 
-      const signals =
-        getBothSignals(data);
+    ["over", "under"].forEach(setup => {
+      const held = data.held[setup];
+      const signal = getBothSignals(data)[setup];
 
-      ["over", "under"].forEach(
-        setup => {
-          const signal =
-            signals[setup];
+      if (!held &&
+          (signal.status !== "STRONG ENTRY" || !signal.entry)) {
+        return;
+      }
 
-          if (
-            signal.status !==
-            "STRONG ENTRY"
-          ) {
-            return;
+      const item = held
+        ? {
+            name,
+            setup,
+            strategy: held.strategy,
+            entry: held.entry,
+            confidence: held.confidence,
+            rate: held.rate,
+            confirmation: held.confirmation,
+            result: held.result || "PENDING",
+            strength: held.strength,
+            backtest: data.backtest[setup]
+              ? data.backtest[setup].accuracy
+              : 0
           }
+        : {
+            name,
+            setup,
+            strategy: signal.strategy,
+            entry: signal.entry.digit,
+            confidence: signal.confidence,
+            rate: signal.rate,
+            confirmation: signal.confirmation,
+            result: "ACTIVE",
+            backtest: data.backtest[setup]
+              ? data.backtest[setup].accuracy
+              : 0
+          };
 
-          count++;
+      if (item.strength === undefined || item.strength === null) {
+        item.strength = clamp(
+          item.confidence * 0.35 +
+          item.rate * 0.30 +
+          item.confirmation * 2 +
+          item.backtest * 0.15,
+          0,
+          100
+        );
+      }
 
-          const entry =
-            signal.entry;
+      active[setup].push(item);
+    });
+  });
 
-          const card =
-            document.createElement("div");
+  active.over.sort((a, b) => b.strength - a.strength);
+  active.under.sort((a, b) => b.strength - a.strength);
 
-          card.className =
-            "entry-card";
+  const createCard = item => {
+    const card = document.createElement("div");
+    card.className = "entry-card";
 
-          const backtest =
-            data.backtest[setup];
+    const accuracy = item.backtest > 0
+      ? `${item.backtest.toFixed(1)}%`
+      : "—";
 
-          const accuracy =
-            backtest
-              ? `${backtest.accuracy.toFixed(1)}%`
-              : "—";
+    const statusText = `<span>Status: <b>${item.result || "PENDING"}</b></span>`;
 
-          card.innerHTML = `
-            <div class="entry-main">
-              <strong>${name}</strong>
-              <span>${setupName(setup)}</span>
-            </div>
+    card.innerHTML = `
+      <div class="entry-main">
+        <strong>${item.name}</strong>
+        <span>${setupName(item.setup)}</span>
+      </div>
 
-            <div class="entry-stats">
-              <span>
-                Entry Digit:
-                <b>${entry ? entry.digit : "—"}</b>
-              </span>
-
-              <span>
-                Confidence:
-                <b>${signal.confidence.toFixed(0)}%</b>
-              </span>
-
-              <span>
-                Setup Rate:
-                <b>${signal.rate.toFixed(1)}%</b>
-              </span>
-
-              <span>
-                Confirmation:
-                <b>${signal.confirmation}/10</b>
-              </span>
-
-              <span>
-                Backtest:
-                <b>${accuracy}</b>
-              </span>
-            </div>
-          `;
-
-          box.appendChild(card);
-        }
-      );
-    }
-  );
-
-  if ($("activeSetups")) {
-    $("activeSetups").textContent =
-      count;
-  }
-
-  if (!count) {
-    box.innerHTML = `
-      <div class="no-entry">
-        🟡 No strong entries at the moment.
-        Waiting for independent OVER 2 or UNDER 7 confirmation.
+      <div class="entry-stats">
+        <span>Strategy: <b>${item.strategy}</b></span>
+        <span>Entry Digit: <b>${item.entry}</b></span>
+        <span>Confidence: <b>${item.confidence.toFixed(0)}%</b></span>
+        <span>Setup Rate: <b>${item.rate.toFixed(1)}%</b></span>
+        <span>Confirmation: <b>${item.confirmation}/10</b></span>
+        <span>Backtest: <b>${accuracy}</b></span>
+        <span>Strength: <b>${item.strength.toFixed(1)}/100</b></span>
+        ${statusText}
       </div>
     `;
+
+    return card;
+  };
+
+  if (!active.over.length) {
+    overBox.innerHTML =
+      '<div class="no-entry">🟡 No strong OVER 2 entries at the moment.</div>';
+  } else {
+    active.over.forEach(item => {
+      overBox.appendChild(createCard(item));
+    });
+  }
+
+  if (!active.under.length) {
+    underBox.innerHTML =
+      '<div class="no-entry">🟡 No strong UNDER 7 entries at the moment.</div>';
+  } else {
+    active.under.forEach(item => {
+      underBox.appendChild(createCard(item));
+    });
   }
 }
 
