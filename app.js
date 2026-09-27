@@ -1237,6 +1237,212 @@ function renderActiveEntries() {
   }
 }
 
+function calculatePriceAction(data) {
+  const quotes = Array.isArray(data?.quotes) ? data.quotes : [];
+
+  if (quotes.length < 10) {
+    return {
+      direction: "Waiting...",
+      momentum: "—",
+      movement: "—",
+      bias: "—",
+      buying: "—",
+      selling: "—",
+      rejection: "—",
+      psychology: "Waiting for more ticks..."
+    };
+  }
+
+  const recent = quotes.slice(-20);
+  const open = Number(recent[0]);
+  const close = Number(recent[recent.length - 1]);
+  const high = Math.max(...recent);
+  const low = Math.min(...recent);
+
+  const range = high - low;
+  const body = Math.abs(close - open);
+
+  let direction = "SIDEWAYS";
+  if (close > open) direction = "UP";
+  if (close < open) direction = "DOWN";
+
+  const previous = Number(recent[Math.max(0, recent.length - 6)]);
+  const momentumMove = close - previous;
+
+  let momentum = "NEUTRAL";
+  if (momentumMove > 0) momentum = "BUYING";
+  if (momentumMove < 0) momentum = "SELLING";
+
+  const movementPercent =
+    open !== 0 ? Math.abs((close - open) / open) * 100 : 0;
+
+  let movement = "LOW";
+  if (movementPercent >= 0.03) movement = "MODERATE";
+  if (movementPercent >= 0.08) movement = "HIGH";
+
+  const upperWick = high - Math.max(open, close);
+  const lowerWick = Math.min(open, close) - low;
+
+  let rejection = "LOW";
+
+  if (range > 0) {
+    const upperRatio = upperWick / range;
+    const lowerRatio = lowerWick / range;
+
+    if (upperRatio > 0.45) rejection = "UPPER REJECTION";
+    if (lowerRatio > 0.45) rejection = "LOWER REJECTION";
+  }
+
+  let buying = 50;
+  let selling = 50;
+
+  if (range > 0) {
+    buying = Math.round(
+      Math.min(100, Math.max(0, 50 + ((close - open) / range) * 50))
+    );
+
+    selling = 100 - buying;
+  }
+
+  let bias = "NEUTRAL";
+
+  if (buying >= 65 && momentumMove > 0) {
+    bias = "BULLISH";
+  } else if (selling >= 65 && momentumMove < 0) {
+    bias = "BEARISH";
+  }
+
+  let psychology = "Balanced buying and selling pressure.";
+
+  if (rejection === "UPPER REJECTION") {
+    psychology = "Price pushed higher but faced selling pressure near the top.";
+  } else if (rejection === "LOWER REJECTION") {
+    psychology = "Price pushed lower but attracted buying pressure near the bottom.";
+  } else if (bias === "BULLISH") {
+    psychology = "Buyers are showing stronger short-term control.";
+  } else if (bias === "BEARISH") {
+    psychology = "Sellers are showing stronger short-term control.";
+  }
+
+  return {
+    direction,
+    momentum,
+    movement: `${movement} (${movementPercent.toFixed(3)}%)`,
+    bias,
+    buying: `${buying}%`,
+    selling: `${selling}%`,
+    rejection,
+    psychology,
+    open,
+    close,
+    high,
+    low,
+    body,
+    range
+  };
+}
+
+function renderPriceAction(data) {
+  const analysis = calculatePriceAction(data);
+
+  if ($("priceDirection"))
+    $("priceDirection").textContent = analysis.direction;
+
+  if ($("priceMomentum"))
+    $("priceMomentum").textContent = analysis.momentum;
+
+  if ($("priceMovement"))
+    $("priceMovement").textContent = analysis.movement;
+
+  if ($("priceBias"))
+    $("priceBias").textContent = analysis.bias;
+
+  if ($("buyingPressure"))
+    $("buyingPressure").textContent = analysis.buying;
+
+  if ($("sellingPressure"))
+    $("sellingPressure").textContent = analysis.selling;
+
+  if ($("priceRejection"))
+    $("priceRejection").textContent = analysis.rejection;
+
+  if ($("candlePsychology"))
+    $("candlePsychology").textContent = analysis.psychology;
+}
+
+function analyzeManualPrediction() {
+  const input = $("manualPrediction");
+  const output = $("predictionAssessment");
+
+  if (!input || !output) return;
+
+  const value = Number(input.value);
+
+  if (!Number.isInteger(value) || value < 0 || value > 9) {
+    output.textContent = "Enter a valid prediction digit from 0 to 9.";
+    return;
+  }
+
+  const data = state[selectedSymbol];
+
+  if (!data || data.digits.length < 20) {
+    output.textContent =
+      "Waiting for enough live tick data before assessing the prediction.";
+    return;
+  }
+
+  const digits = data.digits;
+  const recent = digits.slice(-20);
+
+  const totalFrequency =
+    digits.filter(digit => digit === value).length / digits.length * 100;
+
+  const recentFrequency =
+    recent.filter(digit => digit === value).length / recent.length * 100;
+
+  const signals = getBothSignals(data);
+
+  const overEntry = signals.over.entry?.digit;
+  const underEntry = signals.under.entry?.digit;
+
+  let alignment = "NEUTRAL";
+
+  if (value === overEntry || value === underEntry) {
+    alignment = "ALIGNS WITH CURRENT SIGNAL ANALYSIS";
+  }
+
+  let assessment = "WAIT / UNCLEAR";
+
+  if (
+    totalFrequency >= 12 &&
+    recentFrequency >= 10 &&
+    alignment !== "NEUTRAL"
+  ) {
+    assessment = "STRONGER ALIGNMENT";
+  } else if (
+    totalFrequency >= 10 ||
+    recentFrequency >= 10 ||
+    alignment !== "NEUTRAL"
+  ) {
+    assessment = "PARTIAL ALIGNMENT";
+  } else {
+    assessment = "WEAK ALIGNMENT";
+  }
+
+  output.textContent =
+    `Digit ${value} | Historical: ${totalFrequency.toFixed(1)}% | ` +
+    `Recent: ${recentFrequency.toFixed(1)}% | ${alignment} | ` +
+    `Assessment: ${assessment}`;
+}
+
+function bindPriceAnalysisControls() {
+  const button = $("analyzePrediction");
+
+  if (button) {
+    button.addEventListener("click", analyzeManualPrediction);
+  }
+}
+
 function renderSelected() {
   const data =
     state[selectedSymbol];
@@ -1281,6 +1487,7 @@ function renderSelected() {
 
   renderDistribution(data);
   renderRecent(data);
+  renderPriceAction(data);
 }
 
 function renderDistribution(data) {
@@ -1376,6 +1583,7 @@ function bindControls() {
 
 function initialise() {
   bindControls();
+  bindPriceAnalysisControls();
 
   renderTable();
   renderActiveEntries();

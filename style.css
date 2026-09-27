@@ -29,3 +29,94 @@
     grid-template-columns:1fr;
   }
 }
+
+.analysis-grid{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:10px;
+  margin-bottom:18px;
+}
+
+.analysis-card{
+  background:#081321;
+  border:1px solid #1c334d;
+  border-radius:10px;
+  padding:12px;
+}
+
+.analysis-card span{
+  display:block;
+  color:#8297b0;
+  font-size:11px;
+  margin-bottom:7px;
+}
+
+.analysis-card strong{
+  display:block;
+  font-size:16px;
+}
+
+.psychology-grid{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:10px;
+  margin-bottom:18px;
+}
+
+.psychology-grid .mini strong{
+  display:block;
+  color:#eaf2ff;
+  font-size:14px;
+}
+
+.manual-prediction{
+  display:flex;
+  flex-wrap:wrap;
+  gap:12px;
+  align-items:end;
+  margin-bottom:12px;
+}
+
+.manual-prediction label{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  color:#9fb1c8;
+  font-size:12px;
+}
+
+.manual-prediction input{
+  width:150px;
+  background:#12243a;
+  color:#eef5ff;
+  border:1px solid #29415f;
+  border-radius:8px;
+  padding:10px 12px;
+  font-size:16px;
+}
+
+#predictionAssessment{
+  min-height:45px;
+}
+
+@media(max-width:900px){
+  .analysis-grid,
+  .psychology-grid{
+    grid-template-columns:repeat(2,minmax(0,1fr));
+  }
+}
+
+@media(max-width:700px){
+  .analysis-grid,
+  .psychology-grid{
+    grid-template-columns:1fr 1fr;
+  }
+
+  .manual-prediction{
+    align-items:stretch;
+  }
+
+  .manual-prediction input{
+    width:100%;
+  }
+}

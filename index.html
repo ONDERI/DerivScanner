@@ -241,6 +241,90 @@
     </section>
 
 
+    <section class="panel analysis-panel">
+
+      <h2>📈 PRICE MOVEMENT & CANDLESTICK PSYCHOLOGY</h2>
+
+      <div class="analysis-grid">
+
+        <div class="analysis-card">
+          <span>PRICE DIRECTION</span>
+          <strong id="priceDirection">Waiting...</strong>
+        </div>
+
+        <div class="analysis-card">
+          <span>MOMENTUM</span>
+          <strong id="priceMomentum">—</strong>
+        </div>
+
+        <div class="analysis-card">
+          <span>MOVEMENT</span>
+          <strong id="priceMovement">—</strong>
+        </div>
+
+        <div class="analysis-card">
+          <span>PRICE-ACTION BIAS</span>
+          <strong id="priceBias">—</strong>
+        </div>
+
+      </div>
+
+      <h3>🕯️ CANDLESTICK PSYCHOLOGY</h3>
+
+      <div class="psychology-grid">
+
+        <div class="mini">
+          <span>BUYING PRESSURE</span>
+          <strong id="buyingPressure">—</strong>
+        </div>
+
+        <div class="mini">
+          <span>SELLING PRESSURE</span>
+          <strong id="sellingPressure">—</strong>
+        </div>
+
+        <div class="mini">
+          <span>REJECTION</span>
+          <strong id="priceRejection">—</strong>
+        </div>
+
+        <div class="mini">
+          <span>INTERPRETATION</span>
+          <strong id="candlePsychology">Waiting...</strong>
+        </div>
+
+      </div>
+
+      <h3>🎯 MANUAL PREDICTION / ENTRY</h3>
+
+      <div class="manual-prediction">
+
+        <label>
+          Enter Prediction Digit (0–9)
+          <input
+            id="manualPrediction"
+            type="number"
+            min="0"
+            max="9"
+            step="1"
+            placeholder="0–9"
+          >
+        </label>
+
+        <button id="analyzePrediction" type="button">
+          ANALYZE PREDICTION
+        </button>
+
+      </div>
+
+      <div id="predictionAssessment" class="message">
+        Enter a digit to compare it with the current market analysis.
+      </div>
+
+    </section>
+
+
+
     <section class="panel">
 
       <h2>DIGIT DISTRIBUTION</h2>
