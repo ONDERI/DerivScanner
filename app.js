@@ -33,7 +33,8 @@ const liveResults = {
   losses: 0,
   nextId: 1,
   history: [],
-  pending: []
+  pending: [],
+  liveDigits: {}
 };
 
 
@@ -652,6 +653,8 @@ function renderLiveResults() {
           —
           Entry: <b>${item.entry}</b>
           —
+          Live digit: <b>${liveResults.liveDigits[item.symbol] ?? "—"}</b>
+          —
           Result digit: <b>${item.resultDigit}</b>
           —
           <b>${item.result}</b>
@@ -672,6 +675,8 @@ function processTick(symbol, quote) {
   if (!Number.isFinite(digit)) {
     return;
   }
+
+  liveResults.liveDigits[symbol] = digit;
 
   data.quotes.push(Number(quote));
   data.digits.push(digit);
